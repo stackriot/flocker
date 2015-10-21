@@ -985,6 +985,11 @@ def main(reactor, args, base_path, top_level):
             remote_logs_file = open("remote_logs.log", "a")
             for node in cluster.all_nodes:
                 capture_journal(reactor, node.address, remote_logs_file)
+        elif options['distribution'] in ('ubuntu-14.04', 'ubuntu-15.04',):
+            remote_logs_file = open("remote_logs.log", "a")
+            for node in cluster.all_nodes:
+                # TODO capture upstart
+                pass
 
         if not options["no-pull"]:
             yield perform(
