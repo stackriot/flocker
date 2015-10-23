@@ -10,7 +10,7 @@ from eliot import to_file
 from twisted.python.components import proxyForInterface
 from twisted.python.filepath import FilePath
 from twisted.internet.task import cooperate
-from twisted.internet.defer import maybeDeferred
+from twisted.internet.defer import maybeDeferred, Deferred
 
 from flocker import __version__ as flocker_client_version
 from flocker.apiclient import (
@@ -24,7 +24,7 @@ from benchmark_scenarios import get_scenario
 
 
 def sample(measure, operation, scenario):
-    setting_up = maybeDeferred(scenario.start)
+    setting_up, scenario_status = scenario.start()
 
     samples = []
 
@@ -48,8 +48,18 @@ def sample(measure, operation, scenario):
         return d
 
     def start_sampling(ignored):
+        sampling_complete = Deferred()
         task = cooperate(once(i) for i in range(3))
-        return task.whenDone().addCallback(lambda ignored: samples)
+
+        # If the scenario collapses, stop sampling
+        def stop_sampling_on_scenario_collapse(failure):
+            task.stop()
+            sampling_complete.errback(failure)
+        scenario_status.addErrback(stop_sampling_on_scenario_collapse)
+
+        task.whenDone().addCallback(sampling_complete.callback(samples))
+
+        return sampling_complete
 
     sampling = setting_up.addCallback(start_sampling)
 

@@ -2,7 +2,7 @@ from random import randrange
 import time
 
 from twisted.internet import reactor
-from twisted.internet.defer import maybeDeferred
+from twisted.internet.defer import maybeDeferred, Deferred
 from twisted.internet.task import LoopingCall, deferLater
 
 from twisted.web.client import getPage
@@ -93,6 +93,12 @@ class TestResponseTime(TestCase):
         return deferLater(reactor, 10, do_assert)
 
 
+class RequestRateTooLow(Exception):
+    """
+    The RequestRate dropped below a threshold.
+    """
+
+
 class _ReadOnlyRequests(object):
     def __init__(self, clock, client, request_rate):
         self.clock = clock
@@ -122,7 +128,24 @@ class _ReadOnlyRequests(object):
             print "current rate", current_rate
             return current_rate >= self.request_rate
 
-        return loop_until(reached_target_rate)
+        waiting_for_target_rate = loop_until(reached_target_rate)
+        scenario_status = Deferred()
+
+        def scenario_collapsed():
+            return self.rate_measurer.rate() < self.request_rate
+
+        # Start monitoring the scenario as soon as the target rate is reached.
+        def monitor_scenario_status(result):
+            scenario_monitor = loop_until(scenario_collapsed)
+            scenario_monitor.addCallback(
+                lambda ignored: scenario_status.errback(
+                    RequestRateTooLow(self.rate_measurer.rate())
+                )
+            )
+            return result
+        waiting_for_target_rate.addCallback(monitor_scenario_status)
+
+        return waiting_for_target_rate, scenario_status
 
     def stop(self):
         print "Stopping scenario"
