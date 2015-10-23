@@ -9,6 +9,7 @@ from twisted.web.client import getPage
 from twisted.trial.unittest import TestCase
 
 from flocker.common import gather_deferreds
+from flocker.testtools import loop_until
 
 
 def url_requester():
@@ -34,9 +35,12 @@ class RateMeasurer(object):
             self._count = 0
         self._count += 1
 
-    @property
     def rate(self):
-        return float(sum(self._counts) / float(len(self._counts)))
+        num_counts = len(self._counts)
+        if num_counts == self._sample_size:
+            return float(sum(self._counts) / float(num_counts))
+        else:
+            return float('nan')
 
 
 class LoadGenerator(object):
@@ -85,7 +89,7 @@ class TestResponseTime(TestCase):
 
     def test_rate(self):
         def do_assert():
-            self.assertEqual(10, self.rate_measurer.rate)
+            self.assertEqual(10, self.rate_measurer.rate())
         return deferLater(reactor, 10, do_assert)
 
 
@@ -102,7 +106,7 @@ class _ReadOnlyRequests(object):
 
     def _request_and_measure(self):
         d = self.client.list_nodes()
-        # d.addCallback(self.sample_and_return)
+        d.addCallback(self._sample_and_return)
         return d
 
     def start(self):
@@ -112,6 +116,13 @@ class _ReadOnlyRequests(object):
             req_per_sec=self.request_rate,
         )
         self.load_generator.start()
+
+        def reached_target_rate():
+            current_rate = self.rate_measurer.rate()
+            print "current rate", current_rate
+            return current_rate >= self.request_rate
+
+        return loop_until(reached_target_rate)
 
     def stop(self):
         print "Stopping scenario"
