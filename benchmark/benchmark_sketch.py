@@ -20,9 +20,12 @@ from flocker.common import gather_deferreds
 
 from benchmark_metrics import get_metric
 from benchmark_measurements import get_measurement
+from benchmark_scenarios import get_scenario
 
 
-def sample(measure, operation):
+def sample(measure, operation, scenario):
+    setting_up = maybeDeferred(scenario.start)
+
     samples = []
 
     def once(i):
@@ -43,8 +46,21 @@ def sample(measure, operation):
             return d
         d.addCallback(got_probe)
         return d
-    task = cooperate(once(i) for i in range(3))
-    return task.whenDone().addCallback(lambda ignored: samples)
+
+    def start_sampling(ignored):
+        task = cooperate(once(i) for i in range(3))
+        return task.whenDone().addCallback(lambda ignored: samples)
+
+    sampling = setting_up.addCallback(start_sampling)
+
+    def tear_down(result):
+        d = scenario.stop()
+        d.addCallback(lambda ignored: result)
+        return d
+
+    tearing_down = sampling.addBoth(tear_down)
+
+    return tearing_down
 
 
 def record_samples(samples, version, metric_name, measurement_name):
@@ -106,7 +122,8 @@ class FastConvergingFakeFlockerClient(
 
 
 def driver(reactor, control_service_address=None, cert_directory=b"certs",
-           metric_name=b"read-request", measurement_name=b"wallclock"):
+           metric_name=b"read-request", measurement_name=b"wallclock",
+           scenario_name=b'ten_ro_req_sec'):
 
     to_file(stderr)
     # from twisted.internet.defer import setDebugging
@@ -131,12 +148,15 @@ def driver(reactor, control_service_address=None, cert_directory=b"certs",
     measurement = get_measurement(
         clock=reactor, client=client, name=measurement_name,
     )
+    scenario = get_scenario(
+        clock=reactor, client=client, name=scenario_name,
+    )
     version = client.version()
 
-    d = gather_deferreds((metric, measurement, version))
+    d = gather_deferreds((metric, measurement, scenario, version))
 
-    def got_parameters((metric, measurement, version)):
-        d = sample(measurement, metric)
+    def got_parameters((metric, measurement, scenario, version)):
+        d = sample(measurement, metric, scenario)
         d.addCallback(
             record_samples,
             version[u"flocker"],
@@ -147,4 +167,3 @@ def driver(reactor, control_service_address=None, cert_directory=b"certs",
 
     d.addCallback(got_parameters)
     return d
-

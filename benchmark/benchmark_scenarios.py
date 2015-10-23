@@ -2,6 +2,7 @@ from random import randrange
 import time
 
 from twisted.internet import reactor
+from twisted.internet.defer import maybeDeferred
 from twisted.internet.task import LoopingCall, deferLater
 
 from twisted.web.client import getPage
@@ -48,7 +49,7 @@ class LoadGenerator(object):
     def start(self):
         for i in range(self.req_per_sec):
             loop = LoopingCall(
-                self._request_generator.next,
+                self._request_generator,
             )
             self._loops.append(loop)
             started = loop.start(interval=1)
@@ -74,7 +75,7 @@ class TestResponseTime(TestCase):
                 yield d
 
         self.load_generator = LoadGenerator(
-            request_generator=request_and_measure(),
+            request_generator=request_and_measure().next,
             req_per_sec=10,
         )
         self.load_generator.start()
@@ -86,3 +87,41 @@ class TestResponseTime(TestCase):
         def do_assert():
             self.assertEqual(10, self.rate_measurer.rate)
         return deferLater(reactor, 10, do_assert)
+
+
+class _ReadOnlyRequests(object):
+    def __init__(self, clock, client, request_rate):
+        self.clock = clock
+        self.client = client
+        self.request_rate = request_rate
+        self.rate_measurer = RateMeasurer()
+
+    def _sample_and_return(self, result):
+        self.rate_measurer.new_sample()
+        return result
+
+    def _request_and_measure(self):
+        d = self.client.list_nodes()
+        # d.addCallback(self.sample_and_return)
+        return d
+
+    def start(self):
+        print "Starting scenario"
+        self.load_generator = LoadGenerator(
+            request_generator=self._request_and_measure,
+            req_per_sec=self.request_rate,
+        )
+        self.load_generator.start()
+
+    def stop(self):
+        print "Stopping scenario"
+        return self.load_generator.stop()
+
+from functools import partial
+_scenarios = {
+    "ten_ro_req_sec": partial(_ReadOnlyRequests, request_rate=10),
+}
+
+
+def get_scenario(clock, client, name):
+    return maybeDeferred(_scenarios[name], clock=clock, client=client)
