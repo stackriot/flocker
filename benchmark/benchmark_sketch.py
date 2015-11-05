@@ -57,7 +57,7 @@ def sample(measure, operation, scenario):
             sampling_complete.errback(failure)
         scenario_status.addErrback(stop_sampling_on_scenario_collapse)
 
-        task.whenDone().addCallback(sampling_complete.callback(samples))
+        task.whenDone().addCallback(sampling_complete.callback)
 
         return sampling_complete
 
@@ -70,7 +70,9 @@ def sample(measure, operation, scenario):
 
     tearing_down = sampling.addBoth(tear_down)
 
-    return tearing_down
+    when_done = tearing_down.addCallback(lambda ignored: samples)
+
+    return when_done
 
 
 def record_samples(samples, version, metric_name, measurement_name):
