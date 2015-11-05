@@ -23,7 +23,7 @@ from benchmark_measurements import get_measurement
 from benchmark_scenarios import get_scenario
 
 
-def sample(measure, operation, scenario):
+def sample(measure, operation, scenario, n=3):
     setting_up, scenario_status = scenario.start()
 
     samples = []
@@ -49,7 +49,7 @@ def sample(measure, operation, scenario):
 
     def start_sampling(ignored):
         sampling_complete = Deferred()
-        task = cooperate(once(i) for i in range(3))
+        task = cooperate(once(i) for i in range(n))
 
         # If the scenario collapses, stop sampling
         def stop_sampling_on_scenario_collapse(failure):
