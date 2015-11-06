@@ -10,17 +10,22 @@ from pyrsistent import pmap, pvector, pset
 
 from eliot import Message
 
+from twisted.internet import reactor
 from twisted.trial.unittest import TestCase
 from twisted.python.filepath import FilePath
 
-from .. import P2PManifestationDeployer, ApplicationNodeDeployer, sequentially
+from .. import (
+    NodeLocalState, P2PManifestationDeployer, ApplicationNodeDeployer,
+    sequentially
+)
+from ...common import loop_until
 from ...control._model import (
     Deployment, Application, DockerImage, Node, AttachedVolume, Link,
     Manifestation, Dataset, DeploymentState, NodeState)
 from .._docker import DockerClient
 from ..testtools import wait_for_unit_state, if_docker_configured
 from ...testtools import (
-    random_name, DockerImageBuilder, assertContainsAll, loop_until)
+    random_name, DockerImageBuilder, assertContainsAll)
 from ...volume.testtools import create_volume_service
 from ...route import make_memory_network
 
@@ -47,30 +52,36 @@ class P2PNodeDeployer(object):
     def discover_state(self, local_state):
         d = self.manifestations_deployer.discover_state(local_state)
 
-        def got_manifestations_state(manifestations_state):
-            manifestations_state = manifestations_state[0]
+        def got_manifestations_state(manifestations_local_state):
+            manifestations_state = manifestations_local_state.node_state
             app_discovery = self.applications_deployer.discover_state(
                 manifestations_state)
-            app_discovery.addCallback(
-                lambda app_state: [app_state[0].evolver().set(
-                    "manifestations", manifestations_state.manifestations).set(
-                        "paths", manifestations_state.paths).set(
-                            "devices", manifestations_state.devices
-                        ).persistent()])
+
+            def got_app_local_state(app_local_state):
+                app_state = app_local_state.node_state
+                new_app_local_state = NodeLocalState(
+                    node_state=(
+                        app_state.evolver()
+                        .set("manifestations",
+                             manifestations_state.manifestations)
+                        .set("paths", manifestations_state.paths)
+                        .set("devices",
+                             manifestations_state.devices).persistent()))
+                return new_app_local_state
+            app_discovery.addCallback(got_app_local_state)
             return app_discovery
         d.addCallback(got_manifestations_state)
         return d
 
-    def calculate_changes(
-            self, configuration, cluster_state):
+    def calculate_changes(self, configuration, cluster_state, local_state):
         """
         Combine changes from the application and ZFS agents.
         """
         return sequentially(changes=[
             self.applications_deployer.calculate_changes(
-                configuration, cluster_state),
+                configuration, cluster_state, local_state),
             self.manifestations_deployer.calculate_changes(
-                configuration, cluster_state),
+                configuration, cluster_state, local_state),
         ])
 
 
@@ -90,12 +101,13 @@ def change_node_state(deployer, desired_configuration):
                       applications=[],
                       manifestations={}, paths={}, devices={}))
 
-        def got_changes(changes):
+        def got_changes(local_state):
+            changes = local_state.shared_state_changes()
             cluster_state = DeploymentState()
             for change in changes:
                 cluster_state = change.update_cluster_state(cluster_state)
             return deployer.calculate_changes(
-                desired_configuration, cluster_state)
+                desired_configuration, cluster_state, local_state)
         d.addCallback(got_changes)
         d.addCallback(lambda change: change.run(deployer))
         return d
@@ -175,7 +187,7 @@ class DeployerTests(TestCase):
             list(volumes)[0].get_filesystem().get_path().child(b'env'))
 
         def got_result_path(result_path):
-            d = loop_until(result_path.exists)
+            d = loop_until(reactor, result_path.exists)
             d.addCallback(lambda _: result_path)
             return d
         d.addCallback(got_result_path)
@@ -252,7 +264,7 @@ class DeployerTests(TestCase):
                           b'env'))
 
         def got_result_path(result_path):
-            d = loop_until(result_path.exists)
+            d = loop_until(reactor, result_path.exists)
             d.addCallback(lambda _: result_path)
             return d
         d.addCallback(got_result_path)
@@ -276,7 +288,7 @@ class DeployerTests(TestCase):
             ``Application.__init__``.
 
         :return: ``Deferred`` that fires after convergence loop has been
-            run with results of state discovery.
+            run with the state_changes results of state discovery.
         """
         application_name = random_name(self)
         docker_client = DockerClient()
@@ -318,7 +330,7 @@ class DeployerTests(TestCase):
         d.addCallback(
             lambda results: self.assertIn(
                 pset([link]),
-                [app.links for app in results[0].applications]))
+                [app.links for app in results.node_state.applications]))
         return d
 
     @if_docker_configured
@@ -332,7 +344,7 @@ class DeployerTests(TestCase):
         d.addCallback(
             lambda results: self.assertIn(
                 command_line,
-                [app.command_line for app in results[0].applications]))
+                [app.command_line for app in results.node_state.applications]))
         return d
 
     @if_docker_configured
@@ -363,6 +375,7 @@ class DeployerTests(TestCase):
 
         d = change_node_state(deployer, desired_state)
         d.addCallback(lambda _: wait_for_unit_state(
+            reactor,
             docker_client,
             application_name,
             [u'active'])
@@ -409,6 +422,7 @@ class DeployerTests(TestCase):
 
         d = change_node_state(deployer, desired_state)
         d.addCallback(lambda _: wait_for_unit_state(
+            reactor,
             docker_client,
             application_name,
             [u'active'])

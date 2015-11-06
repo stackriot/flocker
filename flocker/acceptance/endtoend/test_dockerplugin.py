@@ -5,14 +5,17 @@ Tests for the Flocker Docker plugin.
 """
 
 from twisted.internet import reactor
-from twisted.trial.unittest import TestCase
+from twisted.trial.unittest import SkipTest, TestCase
 
 from docker.utils import create_host_config
 
+from distutils.version import LooseVersion
+
+from ...common import loop_until
 from ...common.runner import run_ssh
 
 from ...testtools import (
-    random_name, find_free_port, loop_until
+    random_name, find_free_port,
 )
 from ..testtools import (
     require_cluster, post_http_server, assert_http_server,
@@ -25,6 +28,19 @@ class DockerPluginTests(TestCase):
     """
     Tests for the Docker plugin.
     """
+    def require_docker(self, required_version, cluster):
+        """
+        Check for a specific minimum version of Docker on a remote node.
+        """
+        client = get_docker_client(cluster, cluster.nodes[0].public_address)
+        client_version = LooseVersion(client.version()['Version'])
+        minimum_version = LooseVersion(required_version)
+        if client_version < minimum_version:
+            raise SkipTest(
+                'This test requires at least Docker {}. '
+                'Actual version: {}'.format(minimum_version, client_version)
+            )
+
     def docker_service(self, address, action):
         """
         Restart the Docker daemon on the specified address.
@@ -99,6 +115,45 @@ class DockerPluginTests(TestCase):
             self.addCleanup(client.remove_container, cid, force=True)
         return cid
 
+    def _test_create_container(self, cluster):
+        """
+        Create a container running a simple HTTP server that writes to
+        its volume on POST and reads the same data back from the volume
+        on GET.
+        """
+        data = random_name(self).encode("utf-8")
+        node = cluster.nodes[0]
+        http_port = 8080
+        host_port = find_free_port()[1]
+
+        volume_name = random_name(self)
+        self.run_python_container(
+            cluster, node.public_address,
+            {"host_config": create_host_config(
+                binds=["{}:/data".format(volume_name)],
+                port_bindings={http_port: host_port},
+                restart_policy={"Name": "always"}),
+             "ports": [http_port]},
+            SCRIPTS.child(b"datahttp.py"),
+            # This tells the script where it should store its data,
+            # and we want it to specifically use the volume:
+            [u"/data"])
+
+        d = post_http_server(self, node.public_address, host_port,
+                             {"data": data})
+        d.addCallback(lambda _: assert_http_server(
+            self, node.public_address, host_port, expected_response=data))
+        return d
+
+    @require_cluster(1)
+    def test_create_container_with_v2_plugin_api(self, cluster):
+        """
+        Docker >=1.9, using the v2 plugin API, can run a container
+        with a volume provisioned by Flocker.
+        """
+        self.require_docker('1.9.0', cluster)
+        return self._test_create_container(cluster)
+
     @require_cluster(1)
     def test_volume_persists_restart(self, cluster):
         """
@@ -142,7 +197,7 @@ class DockerPluginTests(TestCase):
                 ds = check_http_server(node.public_address, host_port)
                 ds.addCallback(lambda succeeded: not succeeded)
                 return ds
-            looping = loop_until(http_closed)
+            looping = loop_until(reactor, http_closed)
             return looping
 
         d.addCallback(poll_http_server_stopped)
@@ -168,29 +223,7 @@ class DockerPluginTests(TestCase):
         """
         Docker can run a container with a volume provisioned by Flocker.
         """
-        data = random_name(self).encode("utf-8")
-        node = cluster.nodes[0]
-        http_port = 8080
-        host_port = find_free_port()[1]
-
-        volume_name = random_name(self)
-        self.run_python_container(
-            cluster, node.public_address,
-            {"host_config": create_host_config(
-                binds=["{}:/data".format(volume_name)],
-                port_bindings={http_port: host_port},
-                restart_policy={"Name": "always"}),
-             "ports": [http_port]},
-            SCRIPTS.child(b"datahttp.py"),
-            # This tells the script where it should store its data,
-            # and we want it to specifically use the volume:
-            [u"/data"])
-
-        d = post_http_server(self, node.public_address, host_port,
-                             {"data": data})
-        d.addCallback(lambda _: assert_http_server(
-            self, node.public_address, host_port, expected_response=data))
-        return d
+        return self._test_create_container(cluster)
 
     def _test_move(self, cluster, origin_node, destination_node):
         """
