@@ -24,8 +24,9 @@ from ..ebs import (
     _wait_for_volume_state_change, BOTO_EC2RESPONSE_ERROR,
     VolumeOperations, VolumeStateTable, VolumeStates,
     TimeoutException, _should_finish, UnexpectedStateException,
-    EBSMandatoryProfileAttributes
+    EBSMandatoryProfileAttributes,
 )
+from ....testtools import flaky
 
 from .._logging import (
     AWS_CODE, AWS_MESSAGE, AWS_REQUEST_ID, BOTO_LOG_HEADER,
@@ -188,6 +189,19 @@ class EBSBlockDeviceAPIInterfaceTests(
                                        {u"/dev/sdf"})
         self.assertEqual(result, u"/dev/sdg")
 
+    def test_next_device_in_use_end(self):
+        """
+        ``_next_device`` returns ``None`` if all devices are in use.
+        """
+        devices_in_use = {
+            u'/dev/sd{}'.format(d)
+            for d in u'fghijklmnop'
+        }
+        result = self.api._next_device(
+            self.api.compute_instance_id(), [], devices_in_use
+        )
+        self.assertIs(result, None)
+
     def test_create_volume_gold_profile(self):
         """
         Requesting ``gold`` profile during volume creation honors
@@ -270,6 +284,23 @@ class EBSBlockDeviceAPIInterfaceTests(
         requested_iops = A.requested_iops(ebs_volume.size)
         self.assertEqual(ebs_volume.iops if requested_iops is not None
                          else None, requested_iops)
+
+    @flaky(u'FLOC-2302')
+    def test_listed_volume_attributes(self):
+        return super(
+            EBSBlockDeviceAPIInterfaceTests,
+            self).test_listed_volume_attributes()
+
+    @flaky(u'FLOC-2672')
+    def test_multiple_volumes_attached_to_host(self):
+        return super(
+            EBSBlockDeviceAPIInterfaceTests,
+            self).test_multiple_volumes_attached_to_host()
+
+    @flaky(u'FLOC-3236')
+    def test_detach_volume(self):
+        return super(
+            EBSBlockDeviceAPIInterfaceTests, self).test_detach_volume()
 
 
 class EBSProfiledBlockDeviceAPIInterfaceTests(

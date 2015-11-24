@@ -5,9 +5,7 @@ Tests for the Flocker Docker plugin.
 """
 
 from twisted.internet import reactor
-from twisted.trial.unittest import SkipTest, TestCase
-
-from docker.utils import create_host_config
+from twisted.trial.unittest import SkipTest
 
 from distutils.version import LooseVersion
 
@@ -15,18 +13,20 @@ from ...common import loop_until
 from ...common.runner import run_ssh
 
 from ...testtools import (
-    random_name, find_free_port,
+    AsyncTestCase, random_name, find_free_port, flaky,
 )
 from ..testtools import (
     require_cluster, post_http_server, assert_http_server,
-    get_docker_client, verify_socket, check_http_server, DatasetBackend
+    get_docker_client, verify_socket, check_http_server, DatasetBackend,
+    create_dataset,
 )
+
 from ..scripts import SCRIPTS
 
 from ...node.agents.ebs import EBSMandatoryProfileAttributes
 
 
-class DockerPluginTests(TestCase):
+class DockerPluginTests(AsyncTestCase):
     """
     Tests for the Docker plugin.
     """
@@ -82,7 +82,7 @@ class DockerPluginTests(TestCase):
         return acting
 
     def run_python_container(self, cluster, address, docker_arguments, script,
-                             script_arguments, cleanup=True):
+                             script_arguments, cleanup=True, client=None):
         """
         Run a Python script as a Docker container with the Flocker volume
         driver.
@@ -100,7 +100,8 @@ class DockerPluginTests(TestCase):
 
         :return: Container id, once the Docker container has started.
         """
-        client = get_docker_client(cluster, address)
+        if client is None:
+            client = get_docker_client(cluster, address)
 
         # Remove all existing containers on the node, in case they're left
         # over from previous test:
@@ -157,6 +158,7 @@ class DockerPluginTests(TestCase):
         """
         data = random_name(self).encode("utf-8")
         node = cluster.nodes[0]
+        client = get_docker_client(cluster, node.public_address)
         http_port = 8080
         host_port = find_free_port()[1]
 
@@ -164,7 +166,7 @@ class DockerPluginTests(TestCase):
             volume_name = random_name(self)
         self.run_python_container(
             cluster, node.public_address,
-            {"host_config": create_host_config(
+            {"host_config": client.create_host_config(
                 binds=["{}:/data".format(volume_name)],
                 port_bindings={http_port: host_port},
                 restart_policy={"Name": "always"}),
@@ -172,7 +174,7 @@ class DockerPluginTests(TestCase):
             SCRIPTS.child(b"datahttp.py"),
             # This tells the script where it should store its data,
             # and we want it to specifically use the volume:
-            [u"/data"])
+            [u"/data"], client=client)
 
         d = post_http_server(self, node.public_address, host_port,
                              {"data": data})
@@ -180,6 +182,7 @@ class DockerPluginTests(TestCase):
             self, node.public_address, host_port, expected_response=data))
         return d
 
+    @flaky(u'FLOC-3346')
     @require_cluster(1)
     def test_create_container_with_v2_plugin_api(self, cluster):
         """
@@ -246,13 +249,15 @@ class DockerPluginTests(TestCase):
         # create a simple data HTTP python container, with the restart policy
         data = random_name(self).encode("utf-8")
         node = cluster.nodes[0]
+        client = get_docker_client(cluster, node.public_address)
+
         http_port = 8080
         host_port = find_free_port()[1]
 
         volume_name = random_name(self)
         self.run_python_container(
             cluster, node.public_address,
-            {"host_config": create_host_config(
+            {"host_config": client.create_host_config(
                 binds=["{}:/data".format(volume_name)],
                 port_bindings={http_port: host_port},
                 restart_policy={"Name": "always"}),
@@ -260,7 +265,7 @@ class DockerPluginTests(TestCase):
             SCRIPTS.child(b"datahttp.py"),
             # This tells the script where it should store its data,
             # and we want it to specifically use the volume:
-            [u"/data"])
+            [u"/data"], client=client)
 
         # write some data to it via POST
         d = post_http_server(self, node.public_address, host_port,
@@ -307,6 +312,18 @@ class DockerPluginTests(TestCase):
         """
         return self._test_create_container(cluster)
 
+    @require_cluster(1)
+    def test_run_container_with_preexisting_volume(self, cluster):
+        """
+        Docker can run a container with a volume provisioned by Flocker before
+        it is mentioned to the Docker plugin.
+        """
+        name = random_name(self)
+        d = create_dataset(self, cluster, metadata={u"name": name})
+        d.addCallback(lambda _: self._test_create_container(
+            cluster, volume_name=name))
+        return d
+
     def _test_move(self, cluster, origin_node, destination_node):
         """
         Assert that Docker can run a container with a volume provisioned by
@@ -319,12 +336,13 @@ class DockerPluginTests(TestCase):
 
         :return: ``Deferred`` that fires on assertion success, or failure.
         """
+        client = get_docker_client(cluster, origin_node.public_address)
         data = "hello world"
         http_port = 8080
         host_port = find_free_port()[1]
         volume_name = random_name(self)
         container_args = {
-            "host_config": create_host_config(
+            "host_config": client.create_host_config(
                 binds=["{}:/data".format(volume_name)],
                 port_bindings={http_port: host_port}),
             "ports": [http_port]}
@@ -334,7 +352,7 @@ class DockerPluginTests(TestCase):
             SCRIPTS.child(b"datahttp.py"),
             # This tells the script where it should store its data,
             # and we want it to specifically use the volume:
-            [u"/data"], cleanup=False)
+            [u"/data"], cleanup=False, client=client)
 
         # Post to container on origin node:
         d = post_http_server(self, origin_node.public_address, host_port,
@@ -354,6 +372,7 @@ class DockerPluginTests(TestCase):
             expected_response=data))
         return d
 
+    @flaky(u'FLOC-2977')
     @require_cluster(1)
     def test_move_volume_single_node(self, cluster):
         """
@@ -363,6 +382,7 @@ class DockerPluginTests(TestCase):
         """
         return self._test_move(cluster, cluster.nodes[0], cluster.nodes[0])
 
+    @flaky(u'FLOC-3346')
     @require_cluster(2)
     def test_move_volume_different_node(self, cluster):
         """

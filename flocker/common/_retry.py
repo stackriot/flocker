@@ -6,6 +6,7 @@ Helpers for retrying things.
 
 from __future__ import absolute_import
 
+from datetime import timedelta
 from functools import partial
 from inspect import getfile, getsourcelines
 from itertools import repeat
@@ -17,6 +18,9 @@ from eliot.twisted import DeferredContext
 from twisted.python.reflect import safe_repr
 from twisted.internet.task import deferLater
 from twisted.internet.defer import maybeDeferred
+
+from effect import Effect, Constant, Delay
+from effect.retry import retry
 
 
 def function_serializer(function):
@@ -108,6 +112,30 @@ def loop_until(reactor, predicate, steps=None):
     return d.addActionFinish()
 
 
+def timeout(reactor, deferred, timeout_sec):
+    """Adds a timeout to an existing deferred. If the timeout expires before
+    the deferred expires, then the deferred is cancelled.
+
+    :param IReactorTime reactor: The reactor implementation to schedule the
+        timeout.
+
+    :param Deferred deferred: The deferred to cancel at a later point in time.
+
+    :param float timeout_sec: The number of seconds to wait before the deferred
+        should time out.
+    """
+    def _timeout():
+        deferred.cancel()
+
+    delayed_timeout = reactor.callLater(timeout_sec, _timeout)
+
+    def abort_timeout(passthrough):
+        if delayed_timeout.active():
+            delayed_timeout.cancel()
+        return passthrough
+    deferred.addBoth(abort_timeout)
+
+
 def retry_failure(reactor, function, expected=None, steps=None):
     """
     Retry ``function`` until it returns successfully.
@@ -175,3 +203,44 @@ def poll_until(predicate, steps, sleep=None):
     if result:
         return result
     raise LoopExceeded(predicate, result)
+
+
+# TODO: Would be nice if this interface were more similar to some of the other
+# retry functions in this module.  For example, accept an iterable of intervals
+# instead of timeout/retry_wait/backoff.
+def retry_effect_with_timeout(effect, timeout, retry_wait=timedelta(seconds=1),
+                              backoff=True, time=time.time):
+    """
+    If ``effect`` fails, retry it until ``timeout`` expires.
+
+    To avoid excessive retrying, this function uses the exponential backoff
+    algorithm by default, waiting double the time between each retry.
+
+    :param Effect effect: The Effect to retry.
+    :param int timeout: Keep retrying until timeout.
+    :param timedelta retry_wait: The wait time between retries
+    :param bool backoff: Whether we should use exponential backoff
+    :param callable time: A nullary callable that returns a UNIX timestamp.
+
+    :return: An Effect that does what ``effect`` does, but retrying on
+        exception.
+    """
+    end_time = time() + timeout
+
+    def should_retry(e):
+        if time() >= end_time:
+            return Effect(Constant(False))
+        else:
+            retry_delay = should_retry.wait_secs.total_seconds()
+            effect = Effect(Delay(retry_delay)).on(
+                success=lambda x: Effect(Constant(True))
+            )
+
+            if backoff:
+                should_retry.wait_secs *= 2
+
+            return effect
+
+    should_retry.wait_secs = retry_wait
+
+    return retry(effect, should_retry)

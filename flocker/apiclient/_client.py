@@ -7,6 +7,7 @@ Client for the Flocker REST API.
 from uuid import UUID, uuid4
 from json import dumps
 from datetime import datetime
+from os import environ
 
 from ipaddr import IPv4Address, IPv6Address, IPAddress
 
@@ -21,12 +22,15 @@ from eliot.twisted import DeferredContext
 
 from twisted.internet.defer import succeed, fail
 from twisted.python.filepath import FilePath
-from twisted.web.http import CREATED, OK, CONFLICT
+from twisted.web.http import CREATED, OK, CONFLICT, NOT_FOUND
+from twisted.internet.utils import getProcessOutput
 
 from treq import json_content, content
 
 from ..ca import treq_with_authentication
-from ..control import Leases as LeasesModel, LeaseError
+from ..control import Leases as LeasesModel, LeaseError, DockerImage
+from ..common import retry_failure
+
 from .. import __version__
 
 _LOG_HTTP_REQUEST = ActionType(
@@ -90,6 +94,20 @@ class Lease(PClass):
     expires = field(type=(float, int, NoneType), mandatory=True)
 
 
+class Container(PClass):
+    """
+    A container in the configuration.
+
+    :attr UUID node_uuid: The UUID of a node in the cluster where the container
+        will run.
+    :attr unicode name: The unique name of the container.
+    :attr DockerImage image: The Docker image the container will run.
+    """
+    node_uuid = field(type=UUID, mandatory=True)
+    name = field(type=unicode, mandatory=True)
+    image = field(type=DockerImage, mandatory=True)
+
+
 class Node(PClass):
     """
     A node on which a Flocker agent is running.
@@ -113,6 +131,12 @@ class DatasetAlreadyExists(Exception):
 class LeaseAlreadyHeld(Exception):
     """
     A lease exists for the specified dataset ID on a different node.
+    """
+
+
+class ContainerAlreadyExists(Exception):
+    """
+    The specified container name is in use by another container.
     """
 
 
@@ -222,6 +246,38 @@ class IFlockerAPIV1Client(Interface):
         :return: ``Deferred`` firing with a ``list`` of ``Node``.
         """
 
+    def create_container(node_uuid, name, image):
+        """
+        :param UUID node_uuid: The ``UUID`` of the node where the container
+            will be started.
+        :param unicode name: The name to assign to the container.
+        :param DockerImage image: The Docker image which the container will
+            run.
+
+        :return: ``Deferred`` firing with the configured ``Container`` or
+            ``ContainerAlreadyExists`` if the supplied container name already
+            exists.
+        """
+
+    def list_containers_configuration():
+        """
+        :return: ``Deferred`` firing with ``iterable`` of ``Container``.
+        """
+
+    def delete_container(name):
+        """
+        :param unicode name: The name of the container to be deleted.
+
+        :return: ``Deferred`` firing with the deleted ``Container``.
+        """
+
+    def this_node_uuid():
+        """
+        Return this node's UUID by looking it up by era.
+
+        This is the recommended way of discovering the node UUID.
+        """
+
 
 @implementer(IFlockerAPIV1Client)
 class FakeFlockerClient(object):
@@ -231,12 +287,14 @@ class FakeFlockerClient(object):
     # Placeholder time, we don't model the progress of time at all:
     _NOW = datetime.fromtimestamp(0, UTC)
 
-    def __init__(self, nodes=None):
+    def __init__(self, nodes=None, this_node_uuid=uuid4()):
         self._configured_datasets = pmap()
+        self._configured_containers = pmap()
         self._leases = LeasesModel()
         if nodes is None:
             nodes = []
         self._nodes = nodes
+        self._this_node_uuid = this_node_uuid
         self.synchronize_state()
 
     def create_dataset(self, primary, maximum_size=None, dataset_id=None,
@@ -317,6 +375,29 @@ class FakeFlockerClient(object):
     def list_nodes(self):
         return succeed(self._nodes)
 
+    def create_container(self, node_uuid, name, image):
+        if name in self._configured_containers:
+            return fail(ContainerAlreadyExists())
+        result = Container(
+            node_uuid=node_uuid,
+            name=name,
+            image=image,
+        )
+        self._configured_containers = self._configured_containers.set(
+            name, result
+        )
+        return succeed(result)
+
+    def list_containers_configuration(self):
+        return succeed(self._configured_containers.values())
+
+    def delete_container(self, name):
+        self._configured_containers = self._configured_containers.remove(name)
+        return succeed(None)
+
+    def this_node_uuid(self):
+        return succeed(self._this_node_uuid)
+
 
 class ResponseError(Exception):
     """
@@ -326,6 +407,12 @@ class ResponseError(Exception):
         Exception.__init__(self, "Unexpected response code {}:\n{}\n".format(
             code, body))
         self.code = code
+
+
+class NotFound(Exception):
+    """
+    Result was not found.
+    """
 
 
 @implementer(IFlockerAPIV1Client)
@@ -343,6 +430,7 @@ class FlockerClient(object):
         :param FilePath cert_path: Path to user certificate.
         :param FilePath key_path: Path to user private key.
         """
+        self._reactor = reactor
         self._treq = treq_with_authentication(reactor, ca_cluster_path,
                                               cert_path, key_path)
         self._base_url = b"https://%s:%d/v1" % (host, port)
@@ -357,7 +445,7 @@ class FlockerClient(object):
             body of the request.
         :param set success_codes: Expected success response codes.
         :param error_codes: Mapping from HTTP response code to exception to be
-            raised if it is present, or ``None`` to send no headers.
+            raised if it is present, or ``None`` to set no errors.
 
         :return: ``Deferred`` firing with decoded JSON.
         """
@@ -516,6 +604,44 @@ class FlockerClient(object):
             b"GET", b"/version", None, {OK}
         )
 
+    def _parse_configuration_container(self, container_dict):
+        """
+        Convert a dictionary decoded from JSON with a container's
+        configuration.
+
+        :param container_dict: Dictionary describing a container.
+        :return: ``Container`` instance.
+        """
+        return Container(
+            node_uuid=UUID(hex=container_dict[u"node_uuid"], version=4),
+            name=container_dict[u'name'],
+            image=DockerImage.from_string(container_dict[u"image"]),
+        )
+
+    def create_container(self, node_uuid, name, image):
+        container = dict(
+            node_uuid=unicode(node_uuid), name=name, image=image.full_name,
+        )
+        d = self._request(
+            b"POST",
+            b"/configuration/containers",
+            container,
+            {CREATED},
+            {CONFLICT: ContainerAlreadyExists},
+        )
+        d.addCallback(self._parse_configuration_container)
+        return d
+
+    def list_containers_configuration(self):
+        d = self._request(b"GET", b"/configuration/containers", None, {OK})
+        d.addCallback(
+            lambda containers: list(
+                self._parse_configuration_container(container_dict)
+                for container_dict in containers
+            )
+        )
+        return d
+
     def list_nodes(self):
         request = self._request(
             b"GET", b"/state/nodes", None, {OK}
@@ -535,4 +661,28 @@ class FlockerClient(object):
             return nodes
         request.addCallback(to_nodes)
 
+        return request
+
+    def delete_container(self, name):
+        request = self._request(
+            b"DELETE", b"/configuration/containers/%s" % (
+                name.encode('ascii'),
+            ),
+            None, {OK}
+        )
+        request.addCallback(lambda response: None)
+        return request
+
+    def this_node_uuid(self):
+        getting_era = getProcessOutput(
+            "flocker-node-era", reactor=self._reactor, env=environ)
+
+        def got_era(era):
+            return retry_failure(
+                self._reactor, lambda: self._request(
+                    b"GET", b"/state/nodes/by_era/" + era, None, {OK},
+                    {NOT_FOUND: NotFound},
+                ), [NotFound])
+        request = getting_era.addCallback(got_era)
+        request.addCallback(lambda result: UUID(result["uuid"]))
         return request

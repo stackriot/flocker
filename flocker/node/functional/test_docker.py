@@ -32,7 +32,7 @@ from pyrsistent import PClass, pvector, field
 
 from ...common import loop_until, retry_failure
 from ...testtools import (
-    find_free_port, DockerImageBuilder, assertContainsAll,
+    find_free_port, flaky, DockerImageBuilder, assertContainsAll,
     random_name)
 
 from ..test.test_docker import ANY_IMAGE, make_idockerclient_tests
@@ -78,6 +78,10 @@ class IDockerClientNamespacedTests(make_idockerclient_tests(
     @if_docker_configured
     def setUp(self):
         pass
+
+    @flaky([u'FLOC-2628', u'FLOC-2874'])
+    def test_added_is_listed(self):
+        return super(IDockerClientNamespacedTests, self).test_added_is_listed()
 
 
 class Registry(PClass):
@@ -524,6 +528,7 @@ class GenericDockerClientTests(TestCase):
         d.addCallback(started)
         return d
 
+    @flaky(u'FLOC-3077')
     def test_pull_image_if_necessary(self):
         """
         The Docker image is pulled if it is unavailable locally.
@@ -1073,6 +1078,7 @@ class GenericDockerClientTests(TestCase):
         d.addCallback(self.assertEqual, "1")
         return d
 
+    @flaky(u'FLOC-2840')
     def test_restart_policy_always(self):
         """
         An container with a restart policy of always is restarted
@@ -1315,3 +1321,8 @@ class NamespacedDockerClientTests(GenericDockerClientTests):
         d.addCallback(lambda _: client2.list())
         d.addCallback(self.assertEqual, set())
         return d
+
+    @flaky(u'FLOC-1657')
+    def test_pull_image_if_necessary(self):
+        return super(
+            NamespacedDockerClientTests, self).test_pull_image_if_necessary()
