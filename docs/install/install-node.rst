@@ -6,6 +6,8 @@ Installing the Flocker Node Services
 
 The following instructions describe how to install the ``clusterhq-flocker node`` package, and the optional ``clusterhq-flocker-docker-plugin`` package on each of the nodes in your cluster.
 
+Installing the :ref:`Flocker plugin for Docker <docker-plugin>` at the same time as the other node services is not essential, but it will save you from revisiting each of the nodes in your cluster again if you were to install it at a later time.
+
 .. _installing-flocker-node-prereq:
 
 Prerequisites
