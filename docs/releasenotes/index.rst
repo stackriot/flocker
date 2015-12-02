@@ -17,6 +17,8 @@ You can learn more about where we might be going with future releases by:
 Next release
 ============
 
+* The container agent is now optional and can be safely disabled if you don't expect to be using Flocker's deprecated container API or ``flocker-deploy``.
+  The :ref:`Flocker Plugin for Docker<docker-plugin>` allows you to use Flocker from Docker without using Flocker's container API.
 * The REST API now supports :ref:`conditional requests<conditional requests>` of the form "only create this dataset if the configuration hasn't changed since I last checked it", allowing for e.g. enforcement of metadata uniqueness.
 
 v1.8.0

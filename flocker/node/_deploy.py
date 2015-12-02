@@ -508,6 +508,10 @@ class NotInUseDatasets(object):
         :param applications: Applications running on the node.
         :param Leases leases: The current leases on datasets.
         """
+        # If we're ignorant of application state, assume nothing is using
+        # datasets:
+        if local_applications is None:
+            local_applications = []
         self._node_id = node_uuid
         self._in_use_datasets = {app.volume.manifestation.dataset_id
                                  for app in local_applications
@@ -613,15 +617,9 @@ class P2PManifestationDeployer(object):
         Calculate necessary changes to peer-to-peer manifestations.
 
         Datasets that are in use by applications cannot be deleted,
-        handed-off or resized. See
-        https://clusterhq.atlassian.net/browse/FLOC-1425 for leases, a
-        better solution.
+        handed-off or resized.
         """
         local_state = cluster_state.get_node(self.node_uuid)
-        # We need to know applications (for now) to see if we should delay
-        # deletion or handoffs. Eventually this will rely on leases instead.
-        if local_state.applications is None:
-            return sequentially(changes=[])
         phases = []
 
         not_in_use_datasets = NotInUseDatasets(
