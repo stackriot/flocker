@@ -1,6 +1,6 @@
 # Copyright 2015 ClusterHQ Inc.  See LICENSE file for details.
 """
-Set up a flocker cluster.
+Set up a Flocker cluster.
 """
 
 import sys
@@ -28,7 +28,7 @@ from flocker.control.httpapi import REST_API_PORT
 
 
 class RunOptions(CommonOptions):
-    description = "Set up a flocker cluster."
+    description = "Set up a Flocker cluster."
 
     optParameters = [
         ['image', None, None, 'Image to use for application containers'],
@@ -49,7 +49,7 @@ class RunOptions(CommonOptions):
 
     def __init__(self, top_level):
         """
-        :param FilePath top_level: The top-level of the flocker repository.
+        :param FilePath top_level: The top-level of the Flocker repository.
         """
         super(RunOptions, self).__init__(top_level)
         # Override default values defined in the base class.
@@ -73,7 +73,7 @@ def main(reactor, args, base_path, top_level):
     :param reactor: Reactor to use.
     :param list args: The arguments passed to the script.
     :param FilePath base_path: The executable being run.
-    :param FilePath top_level: The top-level of the flocker repository.
+    :param FilePath top_level: The top-level of the Flocker repository.
     """
     options = RunOptions(top_level=top_level)
 
