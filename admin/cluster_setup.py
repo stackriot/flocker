@@ -185,6 +185,14 @@ def main(reactor, args, base_path, top_level):
 
 
 def _get_flocker_client(reactor, cluster):
+    """
+    Create a :class:`FlockerClient` object for accessing the given cluster.
+
+    :param reactor: The reactor.
+    :param flocker.provision._common.Cluster cluster: The target cluster.
+    :return: The client object.
+    :rtype: flocker.apiclient.FlockerClient
+    """
     control_node = cluster.control_node.address
     certificates_path = cluster.certificates_path
     cluster_cert = certificates_path.child(b"cluster.crt")
@@ -195,6 +203,17 @@ def _get_flocker_client(reactor, cluster):
 
 
 def _get_nodes(reactor, client, cluster):
+    """
+    Wait until all nodes in the cluster are visible via the client API
+    and then get the list of the nodes.
+
+    :param reactor: The reactor.
+    :param flocker.apiclient.FlockerClient client: The client connected to
+        the cluster.
+    :param flocker.provision._common.Cluster cluster: The target cluster.
+    :return: ``Deferred`` firing with a ``list`` of
+        :class:`flocker.apiclient.Node`.
+    """
     def got_all_nodes():
         d = client.list_nodes()
         d.addCallbacks(
