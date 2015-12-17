@@ -82,6 +82,7 @@ class RunOptions(CommonOptions):
         purpose = self['purpose']
         return ClusterIdentity(
             purpose=purpose,
+            prefix=purpose,
             name='{}-cluster'.format(purpose).encode("ascii"),
         )
 
