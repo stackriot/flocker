@@ -9,7 +9,7 @@ import yaml
 from itertools import repeat
 from pipes import quote as shell_quote
 
-from eliot import add_destination, FileDestination
+from eliot import add_destination, write_failure, FileDestination
 
 from twisted.internet.defer import inlineCallbacks
 from twisted.python.filepath import FilePath
@@ -217,10 +217,10 @@ def _get_nodes(reactor, client, cluster):
     """
     def got_all_nodes():
         d = client.list_nodes()
-        d.addCallbacks(
-            lambda nodes: len(nodes) == len(cluster.agent_nodes),
-            lambda _: False
+        d.addCallback(
+            lambda nodes: len(nodes) == len(cluster.agent_nodes)
         )
+        d.addErrback(write_failure, logger=None)
         return d
     got_nodes = loop_until(reactor, got_all_nodes, repeat(1, 300))
     return got_nodes.addCallback(lambda _: client.list_nodes())
