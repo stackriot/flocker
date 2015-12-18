@@ -5,14 +5,12 @@ Set up a Flocker cluster.
 
 import string
 import sys
-import yaml
 from itertools import repeat
 from pipes import quote as shell_quote
 
 from eliot import add_destination, write_failure, FileDestination
 
 from twisted.internet.defer import inlineCallbacks
-from twisted.python.filepath import FilePath
 from twisted.python.usage import UsageError
 
 from .acceptance import (
@@ -26,6 +24,7 @@ from .acceptance import (
 
 from flocker.apiclient import FlockerClient
 from flocker.common import gather_deferreds, loop_until
+from flocker.control import DockerImage
 from flocker.control.httpapi import REST_API_PORT
 
 
@@ -59,10 +58,9 @@ class RunOptions(CommonOptions):
         self['dataset-backend'] = self.defaults['dataset-backend'] = 'aws'
 
     def postOptions(self):
-        if self['app-template'] is not None:
-            template_file = FilePath(self['app-template'])
-            self['template'] = yaml.safe_load(template_file.getContent())
-        if self['apps-per-node'] > 0 and self['image'] is None:
+        if self['image'] is not None:
+            self['image'] = DockerImage.from_string(self['image'])
+        elif self['apps-per-node'] > 0:
             raise UsageError(
                 "image parameter must be provided if apps-per-node > 0"
             )
